@@ -2,47 +2,81 @@ package com.childe.shi.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.childe.shi.data.model.Work
 import com.childe.shi.data.repository.WorkRepository
+import com.childe.shi.ui.category.CategoryDimension
+import com.childe.shi.ui.category.CategoryScreen
 import com.childe.shi.ui.detail.DetailScreen
+import com.childe.shi.ui.favorite.FavoriteScreen
 import com.childe.shi.ui.home.HomeScreen
 import com.childe.shi.ui.home.generateRecommendations
+import com.childe.shi.ui.search.SearchScreen
 import kotlinx.coroutines.launch
+
+/**
+ * 底部导航入口枚举（支持【首页】、【分类】、【搜索】与【收藏】四个一级入口）
+ */
+enum class AppTab(val label: String) {
+    HOME("首页"),
+    CATEGORY("分类"),
+    SEARCH("搜索"),
+    FAVORITE("收藏")
+}
 
 /**
  * 应用根组件与主导航控制器
  *
- * 核心状态提升设计（State Hoisting）：
- * 1. 首页推荐序列 (recommendationList) 与 Pager 翻页状态 (pagerState)
- *    提升至 ShiApp 顶层长期维护；
- * 2. 首页 HomeScreen 常驻组合树，跳转到详情页时通过覆盖式 AnimatedVisibility 呈现 DetailScreen；
- * 3. 从而彻底杜绝了 HomeScreen 离开组合树导致的页码重置、序列重新随机问题；
- * 4. 从详情页返回时，100% 停留在刚才查看的同一推荐位置与同一作品。
+ * 核心架构设计：
+ * 1. 状态提升（State Hoisting）：
+ *    - 首页 PagerState 与推荐序列由顶层持久维护；
+ *    - 分类页 LazyListState、维度（朝代 vs 体裁）、各维度独立标签及请求版本号由顶层持久维护；
+ *    - 搜索页 searchKeyword（rememberSaveable）与 searchListState 由顶层持久维护；
+ * 2. 交互安全隔离：
+ *    - 采用标准条件分支（when）组合，未展示的页面不进入布局树，绝对阻断滑动与点击干扰；
+ * 3. 详情页全屏覆盖与底栏自适应：
+ *    - 打开详情页时覆盖全屏并隐藏底栏；返回后状态完全恢复；
+ * 4. 纯原生绘制：底栏图标采用 Canvas 绘制，零外部图标库依赖。
  */
 @Composable
 fun ShiApp(
@@ -70,7 +104,7 @@ fun ShiApp(
         loadData()
     }
 
-    // 拦截系统返回键：在详情页时返回首页，避免误退应用
+    // 拦截系统返回键：在详情页时关闭详情页；在非详情页且处于非首页 Tab 时返回首页
     BackHandler(enabled = selectedWork != null) {
         selectedWork = null
     }
@@ -122,6 +156,7 @@ fun ShiApp(
             else -> {
                 val works = allWorks.orEmpty()
                 MainContent(
+                    repository = repository,
                     works = works,
                     selectedWork = selectedWork,
                     onSelectWork = { selectedWork = it },
@@ -134,32 +169,35 @@ fun ShiApp(
 
 /**
  * 主内容区域组件
- *
- * 将推荐序列与 Pager 状态稳定维系在组合树中。
  */
 @Composable
 private fun MainContent(
+    repository: WorkRepository,
     works: List<Work>,
     selectedWork: Work?,
     onSelectWork: (Work) -> Unit,
     onDismissDetail: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 提升状态：推荐序列由顶层长期维护
+    // 顶层状态：当前选中的主功能 Tab
+    var currentTab by rememberSaveable { mutableStateOf(AppTab.HOME) }
+
+    // 在分类页或搜索页按下系统返回键时回到首页
+    BackHandler(enabled = selectedWork == null && currentTab != AppTab.HOME) {
+        currentTab = AppTab.HOME
+    }
+
+    // ========== 首页状态提升（持久留存） ==========
     val recommendationList = remember(works) {
         mutableStateListOf<Work>().apply {
             addAll(generateRecommendations(works = works, count = 40))
         }
     }
-
-    // 提升状态：Pager 翻页位置由顶层长期维护
-    val pagerState = rememberPagerState(initialPage = 0) {
+    val homePagerState = rememberPagerState(initialPage = 0) {
         recommendationList.size
     }
-
-    // 随着滑动静默追加更多推荐项
-    LaunchedEffect(pagerState.currentPage) {
-        if (recommendationList.size - pagerState.currentPage <= 8 && works.isNotEmpty()) {
+    LaunchedEffect(homePagerState.currentPage) {
+        if (recommendationList.size - homePagerState.currentPage <= 8 && works.isNotEmpty()) {
             val more = generateRecommendations(
                 works = works,
                 count = 20,
@@ -169,26 +207,346 @@ private fun MainContent(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        // 首页常驻：保持其当前的 Pager 滚动位置与视图
-        HomeScreen(
-            recommendationList = recommendationList,
-            pagerState = pagerState,
-            onWorkClick = onSelectWork,
-        )
+    // ========== 分类页状态提升（持久留存，维度解耦） ==========
+    val categoryListState = rememberLazyListState()
+    var selectedDimension by rememberSaveable { mutableStateOf(CategoryDimension.DYNASTY) }
+    var selectedDynasty by rememberSaveable { mutableStateOf("全部") }
+    var selectedGenre by rememberSaveable { mutableStateOf("ALL") }
+    var requestVersion by remember { mutableLongStateOf(0L) }
 
-        // 详情页平滑淡入淡出覆盖在顶层
+    fun onDimensionChange(newDimension: CategoryDimension) {
+        if (selectedDimension != newDimension) {
+            selectedDimension = newDimension
+            requestVersion++
+        }
+    }
+
+    fun onDynastyChange(newDynasty: String) {
+        if (selectedDynasty != newDynasty) {
+            selectedDynasty = newDynasty
+            requestVersion++
+        }
+    }
+
+    fun onGenreChange(newGenre: String) {
+        if (selectedGenre != newGenre) {
+            selectedGenre = newGenre
+            requestVersion++
+        }
+    }
+
+    fun onRetryCategory() {
+        requestVersion++
+    }
+
+    // ========== 搜索页状态提升（持久留存） ==========
+    var searchKeyword by rememberSaveable { mutableStateOf("") }
+    val searchListState = rememberLazyListState()
+
+    // ========== 收藏页状态提升与响应式数据监听 ==========
+    val favoriteListState = rememberLazyListState()
+    val favoriteIds by repository.favoriteIdsFlow.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 页面内容显示区：采用条件分支组合，未处于活跃状态的页面不进入渲染树，绝对杜绝触控穿透
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            ) {
+                when (currentTab) {
+                    AppTab.HOME -> {
+                        HomeScreen(
+                            recommendationList = recommendationList,
+                            pagerState = homePagerState,
+                            onWorkClick = onSelectWork,
+                        )
+                    }
+                    AppTab.CATEGORY -> {
+                        CategoryScreen(
+                            repository = repository,
+                            works = works,
+                            listState = categoryListState,
+                            selectedDimension = selectedDimension,
+                            selectedDynasty = selectedDynasty,
+                            selectedGenre = selectedGenre,
+                            requestVersion = requestVersion,
+                            onDimensionChange = ::onDimensionChange,
+                            onDynastyChange = ::onDynastyChange,
+                            onGenreChange = ::onGenreChange,
+                            onRetry = ::onRetryCategory,
+                            onWorkClick = onSelectWork,
+                        )
+                    }
+                    AppTab.SEARCH -> {
+                        SearchScreen(
+                            repository = repository,
+                            keyword = searchKeyword,
+                            onKeywordChange = { searchKeyword = it },
+                            listState = searchListState,
+                            onWorkClick = onSelectWork,
+                        )
+                    }
+                    AppTab.FAVORITE -> {
+                        FavoriteScreen(
+                            repository = repository,
+                            listState = favoriteListState,
+                            onWorkClick = onSelectWork,
+                        )
+                    }
+                }
+            }
+
+            // 底部导航栏：仅在未进入详情页时显示，进入详情页时平滑向下滑出并隐藏
+            AnimatedVisibility(
+                visible = selectedWork == null,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                ShiBottomNavigationBar(
+                    currentTab = currentTab,
+                    onTabSelected = { currentTab = it },
+                )
+            }
+        }
+
+        // 详情页全屏浮层：覆盖整个屏幕（包括底栏），退出详情页时平滑淡出
         AnimatedVisibility(
             visible = selectedWork != null,
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
             selectedWork?.let { work ->
+                val isFav = favoriteIds.contains(work.id)
                 DetailScreen(
                     work = work,
+                    isFavorite = isFav,
+                    onToggleFavorite = {
+                        scope.launch {
+                            repository.toggleFavorite(work.id)
+                        }
+                    },
                     onBack = onDismissDetail,
                 )
             }
         }
+    }
+}
+
+/**
+ * 底部原生导航栏（展示【首页】、【分类】、【搜索】与【收藏】四项，原生 Canvas 图标绘制）
+ */
+@Composable
+private fun ShiBottomNavigationBar(
+    currentTab: AppTab,
+    onTabSelected: (AppTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    NavigationBar(
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+    ) {
+        NavigationBarItem(
+            selected = currentTab == AppTab.HOME,
+            onClick = { onTabSelected(AppTab.HOME) },
+            icon = {
+                HomeNavIcon(
+                    tint = if (currentTab == AppTab.HOME) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                )
+            },
+            label = { Text(text = AppTab.HOME.label, fontSize = 12.sp) },
+        )
+
+        NavigationBarItem(
+            selected = currentTab == AppTab.CATEGORY,
+            onClick = { onTabSelected(AppTab.CATEGORY) },
+            icon = {
+                CategoryNavIcon(
+                    tint = if (currentTab == AppTab.CATEGORY) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                )
+            },
+            label = { Text(text = AppTab.CATEGORY.label, fontSize = 12.sp) },
+        )
+
+        NavigationBarItem(
+            selected = currentTab == AppTab.SEARCH,
+            onClick = { onTabSelected(AppTab.SEARCH) },
+            icon = {
+                SearchNavIcon(
+                    tint = if (currentTab == AppTab.SEARCH) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                )
+            },
+            label = { Text(text = AppTab.SEARCH.label, fontSize = 12.sp) },
+        )
+
+        NavigationBarItem(
+            selected = currentTab == AppTab.FAVORITE,
+            onClick = { onTabSelected(AppTab.FAVORITE) },
+            icon = {
+                FavoriteNavIcon(
+                    tint = if (currentTab == AppTab.FAVORITE) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                )
+            },
+            label = { Text(text = AppTab.FAVORITE.label, fontSize = 12.sp) },
+        )
+    }
+}
+
+/**
+ * 首页图标：极简古典亭台/屋脊造型（原生 Canvas 绘制）
+ */
+@Composable
+private fun HomeNavIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.size(24.dp)) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.8.dp.toPx()
+
+        // 飞檐屋顶
+        val roofPath = Path().apply {
+            moveTo(w * 0.15f, h * 0.46f)
+            lineTo(w * 0.5f, h * 0.2f)
+            lineTo(w * 0.85f, h * 0.46f)
+        }
+        drawPath(
+            path = roofPath,
+            color = tint,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+
+        // 屋身立柱与基底
+        val bodyPath = Path().apply {
+            moveTo(w * 0.28f, h * 0.46f)
+            lineTo(w * 0.28f, h * 0.78f)
+            lineTo(w * 0.72f, h * 0.78f)
+            lineTo(w * 0.72f, h * 0.46f)
+        }
+        drawPath(
+            path = bodyPath,
+            color = tint,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+    }
+}
+
+/**
+ * 分类图标：极简书卷/竹简折叠造型（原生 Canvas 绘制）
+ */
+@Composable
+private fun CategoryNavIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.size(24.dp)) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.8.dp.toPx()
+
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.2f, h * 0.3f),
+            end = Offset(w * 0.8f, h * 0.3f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.2f, h * 0.5f),
+            end = Offset(w * 0.65f, h * 0.5f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.2f, h * 0.7f),
+            end = Offset(w * 0.8f, h * 0.7f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/**
+ * 搜索图标：极简放大镜造型（原生 Canvas 绘制）
+ */
+@Composable
+private fun SearchNavIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.size(24.dp)) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.8.dp.toPx()
+
+        // 镜框圆环
+        val center = Offset(w * 0.44f, h * 0.44f)
+        val radius = w * 0.25f
+        drawCircle(
+            color = tint,
+            radius = radius,
+            center = center,
+            style = Stroke(width = stroke),
+        )
+
+        // 镜柄斜线
+        drawLine(
+            color = tint,
+            start = Offset(center.x + radius * 0.707f, center.y + radius * 0.707f),
+            end = Offset(w * 0.82f, h * 0.82f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/**
+ * 收藏图标：极简古典书签造型（原生 Canvas 绘制）
+ */
+@Composable
+private fun FavoriteNavIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.size(24.dp)) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.8.dp.toPx()
+
+        val bookmarkPath = Path().apply {
+            moveTo(w * 0.28f, h * 0.2f)
+            lineTo(w * 0.72f, h * 0.2f)
+            lineTo(w * 0.72f, h * 0.8f)
+            lineTo(w * 0.5f, h * 0.65f)
+            lineTo(w * 0.28f, h * 0.8f)
+            close()
+        }
+        drawPath(
+            path = bookmarkPath,
+            color = tint,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
     }
 }

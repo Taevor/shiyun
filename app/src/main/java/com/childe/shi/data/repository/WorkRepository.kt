@@ -1,6 +1,7 @@
 package com.childe.shi.data.repository
 
 import com.childe.shi.data.model.Work
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 诗词数据仓库接口
@@ -28,4 +29,32 @@ interface WorkRepository {
      * 根据体裁筛选作品（如 "poem" 为诗，"ci" 为词）
      */
     suspend fun getWorksByGenre(genre: String): List<Work>
+
+    /**
+     * 根据朝代筛选作品（如 "唐"、"宋"）
+     */
+    suspend fun getWorksByDynasty(dynasty: String): List<Work>
+
+    /**
+     * 根据关键字本地模糊搜索作品（匹配标题、作者、正文）
+     */
+    suspend fun searchWorks(keyword: String): List<Work>
+
+    /**
+     * 响应式已收藏作品 ID 集合流（供 UI 快速判断是否收藏）
+     */
+    val favoriteIdsFlow: StateFlow<Set<String>>
+
+    /**
+     * 按照收藏时间倒序返回所有已收藏的完整作品列表
+     */
+    suspend fun getFavoriteWorks(): List<Work>
+
+    /**
+     * 切换收藏状态：若未收藏则添加至首位，若已收藏则移除
+     *
+     * @param id 目标作品的唯一 ID
+     * @return 切换后的状态（true 表示已收藏，false 表示已取消收藏）
+     */
+    suspend fun toggleFavorite(id: String): Boolean
 }

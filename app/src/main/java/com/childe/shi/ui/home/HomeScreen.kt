@@ -25,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.childe.shi.data.model.Work
+import com.childe.shi.data.model.formatAuthorDynasty
 
 /**
  * 极简推荐短句首页（纯 UI 呈现组件）
@@ -123,9 +124,15 @@ private fun ExcerptPage(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // 辅助信息：朝代、作者与作品标题（字级较小、视觉权重弱化）
+            // 辅助信息：朝代、作者与作品标题（字级较小、视觉权重弱化，自动容忍缺失信息）
+            val authorDynasty = work.formatAuthorDynasty()
+            val attributionText = if (authorDynasty.isNotEmpty()) {
+                "—— $authorDynasty《${work.title}》"
+            } else {
+                "—— 《${work.title}》"
+            }
             Text(
-                text = "—— 〔${work.dynasty}〕${work.author}《${work.title}》",
+                text = attributionText,
                 fontSize = 14.sp,
                 color = MaterialTheme.colorScheme.outline,
                 textAlign = TextAlign.Center,
