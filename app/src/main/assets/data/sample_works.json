@@ -1,0 +1,74 @@
+[
+  {
+    "id": "tang_000001",
+    "title": "静夜思",
+    "author": "李白",
+    "dynasty": "唐",
+    "genre": "poem",
+    "content": "床前明月光，\n疑是地上霜。\n举头望明月，\n低头思故乡。",
+    "excerpt": "举头望明月，低头思故乡。",
+    "source": "chinese-poetry",
+    "sourceId": "tang_sample_1",
+    "licenseNote": "公有领域"
+  },
+  {
+    "id": "tang_000002",
+    "title": "春夜喜雨",
+    "author": "杜甫",
+    "dynasty": "唐",
+    "genre": "poem",
+    "content": "好雨知时节，当春乃发生。\n随风潜入夜，润物细无声。\n野径云俱黑，江船火独明。\n晓看红湿处，花重锦官城。",
+    "excerpt": "随风潜入夜，润物细无声。",
+    "source": "chinese-poetry",
+    "sourceId": "tang_sample_2",
+    "licenseNote": "公有领域"
+  },
+  {
+    "id": "tang_000003",
+    "title": "相思",
+    "author": "王维",
+    "dynasty": "唐",
+    "genre": "poem",
+    "content": "红豆生南国，春来发几枝。\n愿君多采撷，此物最相思。",
+    "excerpt": "愿君多采撷，此物最相思。",
+    "source": "chinese-poetry",
+    "sourceId": "tang_sample_3",
+    "licenseNote": "公有领域"
+  },
+  {
+    "id": "song_000001",
+    "title": "水调歌头·明月几时有",
+    "author": "苏轼",
+    "dynasty": "宋",
+    "genre": "ci",
+    "content": "丙辰中秋，欢饮达旦，大醉，作此篇，兼怀子由。\n\n明月几时有？把酒问青天。\n不知天上宫阙，今夕是何年。\n我欲乘风归去，又恐琼楼玉宇，高处不胜寒。\n起舞弄清影，何似在人间。\n\n转朱阁，低绮户，照无眠。\n不应有恨，何事长向别时圆？\n人有悲欢离合，月有阴晴圆缺，此事古难全。\n但愿人长久，千里共婵娟。",
+    "excerpt": "但愿人长久，千里共婵娟。",
+    "source": "chinese-poetry",
+    "sourceId": "song_sample_1",
+    "licenseNote": "公有领域"
+  },
+  {
+    "id": "song_000002",
+    "title": "青玉案·元夕",
+    "author": "辛弃疾",
+    "dynasty": "宋",
+    "genre": "ci",
+    "content": "东风夜放花千树，更吹落、星如雨。\n宝马雕车香满路。\n凤箫声动，玉壶光转，一夜鱼龙舞。\n\n蛾儿雪柳黄金缕，笑语盈盈暗香去。\n众里寻他千百度，蓦然回首，那人却在，灯火阑珊处。",
+    "excerpt": "众里寻他千百度，蓦然回首，那人却在，灯火阑珊处。",
+    "source": "chinese-poetry",
+    "sourceId": "song_sample_2",
+    "licenseNote": "公有领域"
+  },
+  {
+    "id": "song_000003",
+    "title": "如梦令·常记溪亭日暮",
+    "author": "李清照",
+    "dynasty": "宋",
+    "genre": "ci",
+    "content": "常记溪亭日暮，沉醉不知归路。\n兴尽晚回舟，误入藕花深处。\n争渡，争渡，惊起一滩鸥鹭。",
+    "excerpt": "常记溪亭日暮，沉醉不知归路。",
+    "source": "chinese-poetry",
+    "sourceId": "song_sample_3",
+    "licenseNote": "公有领域"
+  }
+]
