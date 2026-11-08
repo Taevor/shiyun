@@ -3,6 +3,8 @@ package com.childe.shi.ui.favorite
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,10 +29,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,7 +59,7 @@ import com.childe.shi.ui.log.LogManagementDialog
 fun FavoriteScreen(
     repository: WorkRepository,
     listState: LazyListState,
-    onWorkClick: (Work) -> Unit,
+    onWorkClick: (Work, Rect?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val favoriteIds by repository.favoriteIdsFlow.collectAsState()
@@ -76,41 +81,30 @@ fun FavoriteScreen(
             .background(MaterialTheme.colorScheme.surface)
             .statusBarsPadding(),
     ) {
-        // 顶部标题栏
+        // 顶部操作状态栏（移除多余大标题，优雅呈现收藏统计与运行日志入口）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 24.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "我的收藏",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
+                text = if (favoriteWorks.isNotEmpty()) "藏卷 · 共 ${favoriteWorks.size} 首" else "藏卷",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+                fontWeight = FontWeight.Medium,
             )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (favoriteWorks.isNotEmpty()) {
-                    Text(
-                        text = "共 ${favoriteWorks.size} 首",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
-                Text(
-                    text = "运行日志",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier
-                        .clickable { showLogDialog = true }
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                )
-            }
+            Text(
+                text = "运行日志",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { showLogDialog = true }
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+            )
         }
 
         HorizontalDivider(
@@ -151,9 +145,13 @@ fun FavoriteScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 items(favoriteWorks, key = { it.id }) { work ->
+                    var itemBounds by remember { mutableStateOf<Rect?>(null) }
                     FavoriteWorkItem(
                         work = work,
-                        onClick = { onWorkClick(work) },
+                        onClick = { onWorkClick(work, itemBounds) },
+                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                            itemBounds = coordinates.boundsInRoot()
+                        },
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 20.dp),

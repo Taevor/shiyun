@@ -86,15 +86,15 @@ class LocalJsonWorkRepository(
                     LayoutType.fromCode(raw.trim())
                 } else null
 
-                // 4. 可选字符串字段
-                val cipai = jsonObject.optString("cipai", "").takeIf { it.isNotBlank() }
-                val subtitle = jsonObject.optString("subtitle", "").takeIf { it.isNotBlank() }
-                val preface = jsonObject.optString("preface", "").takeIf { it.isNotBlank() }
+                // 4. 可选字符串字段（严格兼容 JSON null，避免 optString 返回 "null" 字符串）
+                val cipai = parseNullableStringField(jsonObject, "cipai")
+                val subtitle = parseNullableStringField(jsonObject, "subtitle")
+                val preface = parseNullableStringField(jsonObject, "preface")
 
                 // 5. 旧来源字段读取（保留向后兼容）
-                val source = jsonObject.optString("source", "")
-                val sourceId = jsonObject.optString("sourceId", "")
-                val licenseNote = jsonObject.optString("licenseNote", "")
+                val source = parseOptionalStringField(jsonObject, "source")
+                val sourceId = parseOptionalStringField(jsonObject, "sourceId")
+                val licenseNote = parseOptionalStringField(jsonObject, "licenseNote")
 
                 // 6. 底本来源 textSource 显式状态判定
                 val textSource = parseTextSource(jsonObject, source, licenseNote)
@@ -153,6 +153,17 @@ class LocalJsonWorkRepository(
                 throw IllegalArgumentException("字段 '$key' 必须为字符串类型")
             }
             return raw.trim()
+        }
+
+        private fun parseNullableStringField(json: JSONObject, key: String): String? {
+            if (!json.has(key) || json.isNull(key)) {
+                return null
+            }
+            val raw = json.opt(key)
+            if (raw !is String) {
+                throw IllegalArgumentException("字段 '$key' 必须为字符串类型")
+            }
+            return raw.trim().takeIf { it.isNotEmpty() }
         }
 
         private fun parseTextSource(jsonObject: JSONObject, oldSource: String, oldLicenseNote: String): SourceInfo? {
@@ -269,7 +280,7 @@ class LocalJsonWorkRepository(
                     val index = itemObj.optInt("index", i + 1)
                     val quote = requireNonBlankString(itemObj, "quote")
                     val note = requireNonBlankString(itemObj, "note")
-                    val phonetic = itemObj.optString("phonetic", "").takeIf { it.isNotBlank() }
+                    val phonetic = parseNullableStringField(itemObj, "phonetic")
                     val targetLine = if (itemObj.has("targetLine") && !itemObj.isNull("targetLine")) itemObj.getInt("targetLine") else null
                     list.add(AnnotationItem(index, quote, note, phonetic, targetLine))
                 }

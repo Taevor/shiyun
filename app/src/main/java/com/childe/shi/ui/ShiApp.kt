@@ -1,11 +1,11 @@
 package com.childe.shi.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -42,9 +41,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.childe.shi.data.model.Work
+import com.childe.shi.data.repository.LocalReadingPreferencesRepository
+import com.childe.shi.data.repository.ReadingPreferencesRepository
 import com.childe.shi.data.repository.WorkRepository
 import com.childe.shi.ui.category.CategoryDimension
 import com.childe.shi.ui.category.CategoryScreen
@@ -74,6 +76,7 @@ enum class AppTab(val label: String) {
  *    - 首页 PagerState 与推荐序列由顶层持久维护；
  *    - 分类页 LazyListState、维度（朝代 vs 体裁）、各维度独立标签及请求版本号由顶层持久维护；
  *    - 搜索页 searchKeyword（rememberSaveable）与 searchListState 由顶层持久维护；
+ *    - 全局阅读偏好 ReadingPreferences 由顶层持久化仓储管理并实时响应；
  * 2. 交互安全隔离：
  *    - 采用标准条件分支（when）组合，未展示的页面不进入布局树，绝对阻断滑动与点击干扰；
  * 3. 详情页全屏覆盖与底栏自适应：
@@ -83,8 +86,14 @@ enum class AppTab(val label: String) {
 @Composable
 fun ShiApp(
     repository: WorkRepository,
+    preferencesRepository: ReadingPreferencesRepository? = null,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val prefsRepo = remember(preferencesRepository, context) {
+        preferencesRepository ?: LocalReadingPreferencesRepository(context.applicationContext)
+    }
+
     var allWorks by remember { mutableStateOf<List<Work>?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var selectedWork by remember { mutableStateOf<Work?>(null) }
@@ -110,12 +119,6 @@ fun ShiApp(
 
     LaunchedEffect(Unit) {
         loadData()
-    }
-
-    // 拦截系统返回键：在详情页时关闭详情页；在非详情页且处于非首页 Tab 时返回首页
-    BackHandler(enabled = selectedWork != null) {
-        AppLogger.i("Navigation", "系统返回键拦截: 关闭作品详情页")
-        selectedWork = null
     }
 
     Box(
@@ -168,6 +171,7 @@ fun ShiApp(
                     repository = repository,
                     works = works,
                     selectedWork = selectedWork,
+                    preferencesRepository = prefsRepo,
                     onSelectWork = { work ->
                         AppLogger.i("Detail", "进入作品详情: ID=${work.id}, 标题=${work.title}, 朝代=${work.dynasty}, 作者=${work.author}")
                         selectedWork = work
@@ -190,10 +194,13 @@ private fun MainContent(
     repository: WorkRepository,
     works: List<Work>,
     selectedWork: Work?,
+    preferencesRepository: ReadingPreferencesRepository,
     onSelectWork: (Work) -> Unit,
     onDismissDetail: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val readingPreferences by preferencesRepository.preferencesFlow.collectAsState()
+
     // 顶层状态：当前选中的主功能 Tab
     var currentTab by rememberSaveable { mutableStateOf(AppTab.HOME) }
 
@@ -208,11 +215,11 @@ private fun MainContent(
             addAll(generateRecommendations(works = works, count = 40))
         }
     }
-    val homePagerState = rememberPagerState(initialPage = 0) {
-        recommendationList.size
-    }
-    LaunchedEffect(homePagerState.currentPage) {
-        if (recommendationList.size - homePagerState.currentPage <= 8 && works.isNotEmpty()) {
+    var homeCurrentIndex by rememberSaveable { mutableIntStateOf(0) }
+    var isHomeHintShown by remember { mutableStateOf(preferencesRepository.isHomeGestureHintShown()) }
+
+    LaunchedEffect(homeCurrentIndex) {
+        if (recommendationList.size - homeCurrentIndex <= 8 && works.isNotEmpty()) {
             val more = generateRecommendations(
                 works = works,
                 count = 20,
@@ -266,32 +273,41 @@ private fun MainContent(
     var anthologyContextWorks by remember { mutableStateOf<List<Work>?>(null) }
     var anthologyCurrentIndex by remember { mutableIntStateOf(-1) }
 
-    // 统一处理选本作品点击进入详情
-    fun onSelectWorkWithContext(work: Work, contextWorks: List<Work>?) {
+    // 容器转场来源矩形坐标快照与交互锁
+    var transitionSourceRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var isTransitioning by remember { mutableStateOf(false) }
+
+    // 统一处理作品点击进入详情（记录来源矩形快照，并在进入转场期间防二次重入）
+    fun navigateToDetail(work: Work, contextWorks: List<Work>?, sourceRect: androidx.compose.ui.geometry.Rect?) {
+        if (isTransitioning || selectedWork != null) return
+        isTransitioning = true
+        transitionSourceRect = sourceRect
         anthologyContextWorks = contextWorks
         anthologyCurrentIndex = if (contextWorks != null) contextWorks.indexOfFirst { it.id == work.id } else -1
         onSelectWork(work)
     }
 
-    // 选本内切篇：上一首
+    // 选本内切篇：上一首（切篇后清除来源矩形，返回时自动优雅降级为淡出）
     fun onPreviousAnthologyWork() {
         val list = anthologyContextWorks ?: return
         if (anthologyCurrentIndex > 0) {
             val prevIndex = anthologyCurrentIndex - 1
             val prevWork = list[prevIndex]
             anthologyCurrentIndex = prevIndex
+            transitionSourceRect = null // 切篇后坐标失效，标记为 null 以便返回时平滑降级
             AppLogger.i("Detail", "选本切篇 [上一首]: 序号=$prevIndex, 作品 ID=${prevWork.id}, 标题=${prevWork.title}")
             onSelectWork(prevWork)
         }
     }
 
-    // 选本内切篇：下一首
+    // 选本内切篇：下一首（切篇后清除来源矩形，返回时自动优雅降级为淡出）
     fun onNextAnthologyWork() {
         val list = anthologyContextWorks ?: return
         if (anthologyCurrentIndex in 0 until list.size - 1) {
             val nextIndex = anthologyCurrentIndex + 1
             val nextWork = list[nextIndex]
             anthologyCurrentIndex = nextIndex
+            transitionSourceRect = null // 切篇后坐标失效，标记为 null 以便返回时平滑降级
             AppLogger.i("Detail", "选本切篇 [下一首]: 序号=$nextIndex, 作品 ID=${nextWork.id}, 标题=${nextWork.title}")
             onSelectWork(nextWork)
         }
@@ -308,93 +324,105 @@ private fun MainContent(
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 页面内容显示区：采用条件分支组合，未处于活跃状态的页面不进入渲染树，绝对杜绝触控穿透
+            // 页面内容显示区：Tab 之间采用轻量克制的淡入淡出动画过渡，未处于活跃状态的页面不进入渲染树，绝对杜绝触控穿透
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
             ) {
-                when (currentTab) {
-                    AppTab.HOME -> {
-                        HomeScreen(
-                            recommendationList = recommendationList,
-                            pagerState = homePagerState,
-                            onWorkClick = { work ->
-                                anthologyContextWorks = null
-                                anthologyCurrentIndex = -1
-                                onSelectWork(work)
-                            },
-                        )
-                    }
-                    AppTab.CATEGORY -> {
-                        CategoryScreen(
-                            repository = repository,
-                            works = works,
-                            listState = categoryListState,
-                            selectedDimension = selectedDimension,
-                            selectedDynasty = selectedDynasty,
-                            selectedGenre = selectedGenre,
-                            selectedAnthologyId = selectedAnthologyId,
-                            requestVersion = requestVersion,
-                            onDimensionChange = ::onDimensionChange,
-                            onDynastyChange = ::onDynastyChange,
-                            onGenreChange = ::onGenreChange,
-                            onAnthologyChange = ::onAnthologyChange,
-                            onRetry = ::onRetryCategory,
-                            onWorkClick = ::onSelectWorkWithContext,
-                        )
-                    }
-                    AppTab.SEARCH -> {
-                        SearchScreen(
-                            repository = repository,
-                            keyword = searchKeyword,
-                            onKeywordChange = { searchKeyword = it },
-                            listState = searchListState,
-                            onWorkClick = { work ->
-                                anthologyContextWorks = null
-                                anthologyCurrentIndex = -1
-                                onSelectWork(work)
-                            },
-                        )
-                    }
-                    AppTab.FAVORITE -> {
-                        FavoriteScreen(
-                            repository = repository,
-                            listState = favoriteListState,
-                            onWorkClick = { work ->
-                                anthologyContextWorks = null
-                                anthologyCurrentIndex = -1
-                                onSelectWork(work)
-                            },
-                        )
+                androidx.compose.animation.AnimatedContent(
+                    targetState = currentTab,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(140))
+                    },
+                    label = "TabTransition",
+                ) { targetTab ->
+                    when (targetTab) {
+                        AppTab.HOME -> {
+                            HomeScreen(
+                                recommendationList = recommendationList,
+                                currentIndex = homeCurrentIndex,
+                                onIndexChange = { newIndex -> homeCurrentIndex = newIndex },
+                                isHintShown = isHomeHintShown,
+                                onMarkHintShown = {
+                                    scope.launch {
+                                        preferencesRepository.markHomeGestureHintShown()
+                                        isHomeHintShown = true
+                                    }
+                                },
+                                onWorkClick = { work, rect ->
+                                    navigateToDetail(work, null, rect)
+                                },
+                            )
+                        }
+                        AppTab.CATEGORY -> {
+                            CategoryScreen(
+                                repository = repository,
+                                works = works,
+                                listState = categoryListState,
+                                selectedDimension = selectedDimension,
+                                selectedDynasty = selectedDynasty,
+                                selectedGenre = selectedGenre,
+                                selectedAnthologyId = selectedAnthologyId,
+                                requestVersion = requestVersion,
+                                onDimensionChange = ::onDimensionChange,
+                                onDynastyChange = ::onDynastyChange,
+                                onGenreChange = ::onGenreChange,
+                                onAnthologyChange = ::onAnthologyChange,
+                                onRetry = ::onRetryCategory,
+                                onWorkClick = { work, ctxWorks, rect ->
+                                    navigateToDetail(work, ctxWorks, rect)
+                                },
+                            )
+                        }
+                        AppTab.SEARCH -> {
+                            SearchScreen(
+                                repository = repository,
+                                keyword = searchKeyword,
+                                onKeywordChange = { searchKeyword = it },
+                                listState = searchListState,
+                                onWorkClick = { work, rect ->
+                                    navigateToDetail(work, null, rect)
+                                },
+                            )
+                        }
+                        AppTab.FAVORITE -> {
+                            FavoriteScreen(
+                                repository = repository,
+                                listState = favoriteListState,
+                                onWorkClick = { work, rect ->
+                                    navigateToDetail(work, null, rect)
+                                },
+                            )
+                        }
                     }
                 }
             }
 
-            // 底部导航栏：仅在未进入详情页时显示，进入详情页时平滑向下滑出并隐藏
-            AnimatedVisibility(
-                visible = selectedWork == null,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                ShiBottomNavigationBar(
-                    currentTab = currentTab,
-                    onTabSelected = { newTab ->
-                        if (currentTab != newTab) {
-                            AppLogger.i("Navigation", "切换底部主导航: ${currentTab.label} -> ${newTab.label}")
-                            currentTab = newTab
-                        }
-                    },
-                )
-            }
+            // 底部导航栏：始终稳定驻留于原有 Column 底部，不随详情页展开而改变高度与挤压内容区
+            ShiBottomNavigationBar(
+                currentTab = currentTab,
+                onTabSelected = { newTab ->
+                    if (selectedWork == null && currentTab != newTab) {
+                        AppLogger.i("Navigation", "切换底部主导航: ${currentTab.label} -> ${newTab.label}")
+                        currentTab = newTab
+                    }
+                },
+            )
         }
 
-        // 详情页全屏浮层：覆盖整个屏幕（包括底栏），退出详情页时平滑淡出
-        AnimatedVisibility(
+        // 详情页全屏浮层：采用原生容器展开/收拢转场，来源矩形无效或切篇后自动平滑降级
+        com.childe.shi.ui.animation.ContainerTransformBox(
             visible = selectedWork != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
+            sourceRect = transitionSourceRect,
+            onDismissRequest = {
+                anthologyContextWorks = null
+                anthologyCurrentIndex = -1
+                transitionSourceRect = null
+                isTransitioning = false
+                onDismissDetail()
+            },
+        ) { requestDismiss ->
             selectedWork?.let { work ->
                 val isFav = favoriteIds.contains(work.id)
                 val inAnthology = anthologyContextWorks != null
@@ -409,15 +437,22 @@ private fun MainContent(
                             repository.toggleFavorite(work.id)
                         }
                     },
-                    onBack = {
-                        anthologyContextWorks = null
-                        anthologyCurrentIndex = -1
-                        onDismissDetail()
-                    },
+                    onBack = requestDismiss,
                     onPreviousWork = if (inAnthology) ::onPreviousAnthologyWork else null,
                     onNextWork = if (inAnthology) ::onNextAnthologyWork else null,
                     hasPrevious = hasPrev,
                     hasNext = hasNxt,
+                    preferences = readingPreferences,
+                    onPreferencesChange = { newPrefs ->
+                        scope.launch {
+                            preferencesRepository.updatePreferences(newPrefs)
+                        }
+                    },
+                    onResetPreferences = {
+                        scope.launch {
+                            preferencesRepository.resetToDefault()
+                        }
+                    },
                 )
             }
         }

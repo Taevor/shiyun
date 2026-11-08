@@ -36,7 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,6 +48,7 @@ import com.childe.shi.common.log.AppLogger
 import com.childe.shi.data.model.Anthology
 import com.childe.shi.data.model.AnthologyWorkItem
 import com.childe.shi.data.model.Work
+import com.childe.shi.data.model.formatAuthorDynasty
 import com.childe.shi.data.model.formatAuthorDynastyGenre
 import com.childe.shi.data.repository.WorkRepository
 import kotlin.coroutines.cancellation.CancellationException
@@ -98,7 +103,7 @@ fun CategoryScreen(
     onGenreChange: (String) -> Unit,
     onAnthologyChange: (String) -> Unit,
     onRetry: () -> Unit,
-    onWorkClick: (Work, List<Work>?) -> Unit,
+    onWorkClick: (Work, List<Work>?, Rect?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var uiState by remember { mutableStateOf<CategoryUiState>(CategoryUiState.Loading) }
@@ -197,16 +202,7 @@ fun CategoryScreen(
             .background(MaterialTheme.colorScheme.surface)
             .statusBarsPadding(),
     ) {
-        // 1. 顶部标题
-        Text(
-            text = "分类",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 12.dp),
-        )
-
-        // 2. 一级分类维度切换（按朝代 vs 按体裁）
+        // 1. 一级分类维度切换（按朝代 vs 按体裁 vs 按选本）置顶
         PrimaryTabRow(
             selectedTabIndex = selectedDimension.ordinal,
             containerColor = MaterialTheme.colorScheme.surface,
@@ -337,9 +333,13 @@ fun CategoryScreen(
                             items = state.works,
                             key = { it.id },
                         ) { work ->
+                            var itemBounds by remember { mutableStateOf<Rect?>(null) }
                             CategoryWorkItem(
                                 work = work,
-                                onClick = { onWorkClick(work, null) },
+                                onClick = { onWorkClick(work, null, itemBounds) },
+                                modifier = Modifier.onGloballyPositioned { coordinates ->
+                                    itemBounds = coordinates.boundsInRoot()
+                                },
                             )
                             HorizontalDivider(
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
@@ -396,9 +396,13 @@ fun CategoryScreen(
                             items = state.items,
                             key = { it.item.id },
                         ) { item ->
+                            var itemBounds by remember { mutableStateOf<Rect?>(null) }
                             AnthologyWorkRowItem(
                                 item = item,
-                                onClick = { onWorkClick(item.work, anthologyWorks) },
+                                onClick = { onWorkClick(item.work, anthologyWorks, itemBounds) },
+                                modifier = Modifier.onGloballyPositioned { coordinates ->
+                                    itemBounds = coordinates.boundsInRoot()
+                                },
                             )
                             HorizontalDivider(
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
@@ -419,6 +423,11 @@ fun CategoryScreen(
 
 /**
  * 选本专属列表项：包含原书篇目序号（如 001）、分卷体裁、标题、作者与名句摘录
+ *
+ * 排版严格对齐按朝代与按体裁列表：
+ * 1. 采用 SpaceBetween 布局，右侧作者朝代始终坚固右对齐，绝不随标题长短漂移；
+ * 2. 左侧序号、分卷标牌与标题自适应约束，长标题安全省略截断，杜绝与右侧重叠；
+ * 3. 摘录与内边距与按朝代/体裁列表一致，保持统一的雅致视觉韵律。
  */
 @Composable
 private fun AnthologyWorkRowItem(
@@ -428,61 +437,70 @@ private fun AnthologyWorkRowItem(
 ) {
     val work = item.work
     val orderStr = String.format(java.util.Locale.CHINA, "%03d", item.item.orderIndex)
+    val authorText = work.formatAuthorDynasty().ifEmpty { work.author }
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 24.dp, vertical = 14.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 序号标号
-            Text(
-                text = orderStr,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(end = 10.dp),
-            )
+            // 左侧容器：包含篇目序号、分卷/体裁标牌与标题
+            Row(
+                modifier = Modifier.weight(1f, fill = false),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 序号标号
+                Text(
+                    text = orderStr,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
 
-            // 分卷/体裁标牌（若存在，如 "五言绝句"、"五言古诗"）
-            if (item.item.volume.isNotBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.padding(end = 10.dp),
-                ) {
-                    Text(
-                        text = item.item.volume,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    )
+                // 分卷/体裁标牌（若存在，如 "五言绝句"、"五言古诗"）
+                if (item.item.volume.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.padding(end = 8.dp),
+                    ) {
+                        Text(
+                            text = item.item.volume,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
                 }
+
+                // 标题（支持过长截断，安全留出右侧作者位置）
+                Text(
+                    text = work.title,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
             }
 
-            // 标题
+            // 右侧作者与朝代（严格右对齐，与按朝代/体裁列表视觉对齐一致）
             Text(
-                text = work.title,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // 作者与朝代
-            Text(
-                text = if (work.dynasty.isNotBlank()) "〔${work.dynasty}〕${work.author}" else work.author,
+                text = authorText,
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.outline,
-                modifier = Modifier.padding(start = 8.dp),
+                textAlign = TextAlign.End,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp),
             )
         }
 
@@ -490,12 +508,11 @@ private fun AnthologyWorkRowItem(
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = work.excerpt,
-                fontSize = 13.sp,
+                fontSize = 14.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                lineHeight = 18.sp,
-                modifier = Modifier.padding(start = 32.dp),
+                lineHeight = 20.sp,
             )
         }
     }

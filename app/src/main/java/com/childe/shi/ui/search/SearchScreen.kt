@@ -38,7 +38,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -80,7 +82,7 @@ fun SearchScreen(
     keyword: String,
     onKeywordChange: (String) -> Unit,
     listState: LazyListState,
-    onWorkClick: (Work) -> Unit,
+    onWorkClick: (Work, Rect?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var uiState by remember { mutableStateOf<SearchUiState>(SearchUiState.Idle) }
@@ -131,22 +133,13 @@ fun SearchScreen(
             .statusBarsPadding()
             .imePadding(),
     ) {
-        // 1. 顶部标题
-        Text(
-            text = "搜索",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 12.dp),
-        )
-
-        // 2. 搜索输入框
+        // 搜索输入框置顶（移除大标题，优化软键盘避让空间）
         OutlinedTextField(
             value = keyword,
             onValueChange = onKeywordChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 4.dp),
+                .padding(horizontal = 20.dp, vertical = 10.dp),
             placeholder = {
                 Text(
                     text = "输入诗词标题、作者或正文内容",
@@ -267,11 +260,15 @@ fun SearchScreen(
                             items = state.results,
                             key = { it.id },
                         ) { work ->
+                            var itemBounds by remember { mutableStateOf<Rect?>(null) }
                             val snippet = getSearchSnippet(work = work, keyword = keyword)
                             SearchWorkItem(
                                 work = work,
                                 snippet = snippet,
-                                onClick = { onWorkClick(work) },
+                                onClick = { onWorkClick(work, itemBounds) },
+                                modifier = Modifier.onGloballyPositioned { coordinates ->
+                                    itemBounds = coordinates.boundsInRoot()
+                                },
                             )
                             HorizontalDivider(
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
