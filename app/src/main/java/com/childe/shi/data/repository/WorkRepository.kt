@@ -57,4 +57,19 @@ interface WorkRepository {
      * @return 切换后的状态（true 表示已收藏，false 表示已取消收藏）
      */
     suspend fun toggleFavorite(id: String): Boolean
+
+    /**
+     * 获取所有可用的经典选本列表（如《唐诗三百首》、《宋词三百首》）
+     */
+    suspend fun getAnthologies(): List<com.childe.shi.data.model.Anthology>
+
+    /**
+     * 根据选本 ID 获取选本实体
+     */
+    suspend fun getAnthologyById(id: String): com.childe.shi.data.model.Anthology?
+
+    /**
+     * 获取指定选本内的作品列表（严格按 orderIndex 升序对齐）
+     */
+    suspend fun getWorksByAnthology(anthologyId: String): List<com.childe.shi.data.model.AnthologyWorkItem>
 }

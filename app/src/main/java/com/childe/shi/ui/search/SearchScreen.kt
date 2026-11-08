@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.childe.shi.common.log.AppLogger
 import com.childe.shi.data.model.Work
 import com.childe.shi.data.model.formatAuthorDynastyGenre
 import com.childe.shi.data.repository.WorkRepository
@@ -83,23 +85,23 @@ fun SearchScreen(
 ) {
     var uiState by remember { mutableStateOf<SearchUiState>(SearchUiState.Idle) }
     val focusManager = LocalFocusManager.current
-    var lastSearchedKeyword by remember { mutableStateOf(keyword) }
+    var lastSearchedKeyword by rememberSaveable { mutableStateOf(keyword) }
 
-    // 搜索执行协程（带防抖和自动取消机制）
+    // 搜索执行协程（基于关键词变动触发，支持协程安全取消）
     LaunchedEffect(keyword) {
         val trimmed = keyword.trim()
 
-        // 仅当关键词发生实质变化时重置列表滚动至顶部（Tab 切换不触发）
-        if (trimmed != lastSearchedKeyword.trim()) {
-            lastSearchedKeyword = keyword
-            listState.scrollToItem(0)
-        }
-
         if (trimmed.isEmpty()) {
+            lastSearchedKeyword = ""
             uiState = SearchUiState.Idle
+            AppLogger.d("SearchScreen", "搜索输入清空，重置为空闲状态")
             return@LaunchedEffect
         }
 
+        val isKeywordChanged = trimmed != lastSearchedKeyword.trim()
+        lastSearchedKeyword = keyword
+
+        AppLogger.d("SearchScreen", "发起搜索: 关键词长度=${trimmed.length}, 内容实质变化=$isKeywordChanged")
         uiState = SearchUiState.Searching
         try {
             val results = repository.searchWorks(trimmed)
@@ -108,10 +110,16 @@ fun SearchScreen(
             } else {
                 SearchUiState.Success(results)
             }
+
+            // 仅当关键词实质变动且列表已有滚动偏移时安全重置到顶部（避免未挂载时挂起协程）
+            if (isKeywordChanged && (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)) {
+                listState.scrollToItem(0)
+            }
         } catch (e: CancellationException) {
             // 协程正常取消，必须重新抛出，绝不当成异常提示
             throw e
         } catch (e: Exception) {
+            AppLogger.e("SearchScreen", "搜索执行发生异常: ${e.message}", e)
             uiState = SearchUiState.Error(e.message ?: "搜索遇到错误")
         }
     }

@@ -25,6 +25,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,6 +40,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.childe.shi.common.log.AppLogger
+import com.childe.shi.data.model.Anthology
+import com.childe.shi.data.model.AnthologyWorkItem
 import com.childe.shi.data.model.Work
 import com.childe.shi.data.model.formatAuthorDynastyGenre
 import com.childe.shi.data.repository.WorkRepository
@@ -49,7 +53,8 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 enum class CategoryDimension(val label: String) {
     DYNASTY("按朝代"),
-    GENRE("按体裁")
+    GENRE("按体裁"),
+    ANTHOLOGY("按选本")
 }
 
 /**
@@ -63,6 +68,7 @@ data class GenreOption(val code: String, val label: String)
 sealed interface CategoryUiState {
     data object Loading : CategoryUiState
     data class Success(val works: List<Work>) : CategoryUiState
+    data class AnthologySuccess(val items: List<AnthologyWorkItem>, val anthology: Anthology?) : CategoryUiState
     data object Empty : CategoryUiState
     data class Error(val message: String) : CategoryUiState
 }
@@ -73,7 +79,7 @@ sealed interface CategoryUiState {
  * 遵循严格架构约束：
  * 1. 组合树持久驻留：打开详情页时不被销毁重构；
  * 2. 状态完全提升：listState、分类维度与标签均由上层传入，双向返回无感还原；
- * 3. 维度状态完全解耦：朝代与体裁独立保存，切换维度时恢复各自上次选中的标签；
+ * 3. 维度状态完全解耦：朝代、体裁与选本独立保存，切换维度时恢复各自上次选中的标签；
  * 4. 防竞态保护：基于 requestVersion 立即失效机制，旧查询绝不覆盖最新结果；
  * 5. 纯 Repository 查询：不读取 assets 或 JSON，UI 层零数据解析。
  */
@@ -85,15 +91,27 @@ fun CategoryScreen(
     selectedDimension: CategoryDimension,
     selectedDynasty: String,
     selectedGenre: String,
+    selectedAnthologyId: String,
     requestVersion: Long,
     onDimensionChange: (CategoryDimension) -> Unit,
     onDynastyChange: (String) -> Unit,
     onGenreChange: (String) -> Unit,
+    onAnthologyChange: (String) -> Unit,
     onRetry: () -> Unit,
-    onWorkClick: (Work) -> Unit,
+    onWorkClick: (Work, List<Work>?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var uiState by remember { mutableStateOf<CategoryUiState>(CategoryUiState.Loading) }
+    var anthologiesList by remember { mutableStateOf<List<Anthology>>(emptyList()) }
+
+    // 初始异步加载选本定义列表，供选本胶囊选项展示
+    LaunchedEffect(Unit) {
+        try {
+            anthologiesList = repository.getAnthologies()
+        } catch (e: Exception) {
+            AppLogger.e("CategoryScreen", "加载选本列表定义失败: ${e.message}", e)
+        }
+    }
 
     // 动态提取已有作品中存在的全部朝代并去重，不写死唐宋，自动支持未来扩充
     val dynastyOptions = remember(works) {
@@ -113,40 +131,60 @@ fun CategoryScreen(
     }
 
     // 协程查询：基于严格的请求版本控制，防止快速切换导致旧数据覆盖
-    LaunchedEffect(requestVersion) {
+    LaunchedEffect(requestVersion, selectedDimension, selectedDynasty, selectedGenre, selectedAnthologyId) {
         val thisVersion = requestVersion
+        val filterDesc = when (selectedDimension) {
+            CategoryDimension.DYNASTY -> selectedDynasty
+            CategoryDimension.GENRE -> selectedGenre
+            CategoryDimension.ANTHOLOGY -> selectedAnthologyId
+        }
+        AppLogger.d("CategoryScreen", "加载分类列表: 维度=${selectedDimension.label}, 选中标签=$filterDesc, 版本=$thisVersion")
         uiState = CategoryUiState.Loading
 
         try {
-            val results = when (selectedDimension) {
+            when (selectedDimension) {
                 CategoryDimension.DYNASTY -> {
-                    if (selectedDynasty == "全部") {
+                    val results = if (selectedDynasty == "全部") {
                         repository.getAllWorks()
                     } else {
                         repository.getWorksByDynasty(selectedDynasty)
                     }
+                    if (thisVersion == requestVersion) {
+                        AppLogger.d("CategoryScreen", "朝代分类加载完成: 结果篇数=${results.size}, 版本=$thisVersion")
+                        uiState = if (results.isEmpty()) CategoryUiState.Empty else CategoryUiState.Success(results)
+                    }
                 }
                 CategoryDimension.GENRE -> {
-                    if (selectedGenre == "ALL" || selectedGenre == "全部") {
+                    val results = if (selectedGenre == "ALL" || selectedGenre == "全部") {
                         repository.getAllWorks()
                     } else {
                         repository.getWorksByGenre(selectedGenre)
                     }
+                    if (thisVersion == requestVersion) {
+                        AppLogger.d("CategoryScreen", "体裁分类加载完成: 结果篇数=${results.size}, 版本=$thisVersion")
+                        uiState = if (results.isEmpty()) CategoryUiState.Empty else CategoryUiState.Success(results)
+                    }
                 }
-            }
-
-            // 核心防护：仅当当前协程版本依然是最新的有效版本时，才允许写入 UI 状态
-            if (thisVersion == requestVersion) {
-                uiState = if (results.isEmpty()) {
-                    CategoryUiState.Empty
-                } else {
-                    CategoryUiState.Success(results)
+                CategoryDimension.ANTHOLOGY -> {
+                    val currentAnthology = repository.getAnthologyById(selectedAnthologyId)
+                        ?: repository.getAnthologies().firstOrNull()
+                    val targetAnthologyId = currentAnthology?.id ?: selectedAnthologyId
+                    val anthologyItems = repository.getWorksByAnthology(targetAnthologyId)
+                    if (thisVersion == requestVersion) {
+                        AppLogger.d("CategoryScreen", "选本加载完成: 选本ID=$targetAnthologyId, 篇目数=${anthologyItems.size}, 版本=$thisVersion")
+                        uiState = if (anthologyItems.isEmpty()) {
+                            CategoryUiState.Empty
+                        } else {
+                            CategoryUiState.AnthologySuccess(anthologyItems, currentAnthology)
+                        }
+                    }
                 }
             }
         } catch (e: CancellationException) {
             // 协程取消信号，必须原样重新抛出，绝不当做错误展示给用户
             throw e
         } catch (e: Exception) {
+            AppLogger.e("CategoryScreen", "加载分类作品失败: ${e.message}", e)
             if (thisVersion == requestVersion) {
                 uiState = CategoryUiState.Error(e.message ?: "加载分类作品失败")
             }
@@ -231,6 +269,23 @@ fun CategoryScreen(
                         )
                     }
                 }
+                CategoryDimension.ANTHOLOGY -> {
+                    anthologiesList.forEach { anthology ->
+                        val isSelected = selectedAnthologyId == anthology.id
+                        val countSuffix = if (anthology.targetCount > 0) "${anthology.targetCount}首" else ""
+                        val labelText = if (countSuffix.isNotEmpty()) "${anthology.name} $countSuffix" else anthology.name
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onAnthologyChange(anthology.id) },
+                            label = { Text(text = labelText, fontSize = 13.sp) },
+                            shape = RoundedCornerShape(16.dp),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            ),
+                        )
+                    }
+                }
             }
         }
 
@@ -284,7 +339,7 @@ fun CategoryScreen(
                         ) { work ->
                             CategoryWorkItem(
                                 work = work,
-                                onClick = { onWorkClick(work) },
+                                onClick = { onWorkClick(work, null) },
                             )
                             HorizontalDivider(
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
@@ -297,7 +352,151 @@ fun CategoryScreen(
                         }
                     }
                 }
+
+                is CategoryUiState.AnthologySuccess -> {
+                    val anthologyWorks = remember(state.items) {
+                        state.items.map { it.work }
+                    }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        // 选本顶部信息卡片（显示编选者、朝代及收录数量）
+                        state.anthology?.let { anth ->
+                            item(key = "anthology_header") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                                ) {
+                                    Text(
+                                        text = "${anth.name} · 共收录 ${state.items.size} 篇",
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    if (anth.compiler.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "编选：${anth.compiler}",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.outline,
+                                        )
+                                    }
+                                }
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                    modifier = Modifier.padding(horizontal = 24.dp),
+                                )
+                            }
+                        }
+
+                        // 按 orderIndex 升序展示的选本篇目列表
+                        items(
+                            items = state.items,
+                            key = { it.item.id },
+                        ) { item ->
+                            AnthologyWorkRowItem(
+                                item = item,
+                                onClick = { onWorkClick(item.work, anthologyWorks) },
+                            )
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                modifier = Modifier.padding(horizontal = 24.dp),
+                            )
+                        }
+
+                        // 底部留白，保障视觉呼吸感
+                        item {
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+/**
+ * 选本专属列表项：包含原书篇目序号（如 001）、分卷体裁、标题、作者与名句摘录
+ */
+@Composable
+private fun AnthologyWorkRowItem(
+    item: AnthologyWorkItem,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val work = item.work
+    val orderStr = String.format(java.util.Locale.CHINA, "%03d", item.item.orderIndex)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 14.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 序号标号
+            Text(
+                text = orderStr,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(end = 10.dp),
+            )
+
+            // 分卷/体裁标牌（若存在，如 "五言绝句"、"五言古诗"）
+            if (item.item.volume.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.padding(end = 10.dp),
+                ) {
+                    Text(
+                        text = item.item.volume,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+
+            // 标题
+            Text(
+                text = work.title,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            // 作者与朝代
+            Text(
+                text = if (work.dynasty.isNotBlank()) "〔${work.dynasty}〕${work.author}" else work.author,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
+
+        if (work.excerpt.isNotBlank()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = work.excerpt,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = 18.sp,
+                modifier = Modifier.padding(start = 32.dp),
+            )
         }
     }
 }

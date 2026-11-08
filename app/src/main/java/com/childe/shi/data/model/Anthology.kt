@@ -37,3 +37,14 @@ data class AnthologyItem(
     val orderIndex: Int,
     val volume: String
 )
+
+/**
+ * 选本与关联作品复合展示条目（包含原始篇目元数据与完整作品数据）
+ *
+ * @property item 选本篇目原始元数据（含序数、分卷信息）
+ * @property work 完整诗词作品数据
+ */
+data class AnthologyWorkItem(
+    val item: AnthologyItem,
+    val work: Work
+)

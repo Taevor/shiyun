@@ -8,6 +8,8 @@ import com.childe.shi.data.model.Genre
 import com.childe.shi.data.model.LayoutType
 import com.childe.shi.data.model.LicenseType
 import com.childe.shi.data.repository.LocalJsonWorkRepository
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -466,12 +468,12 @@ class LocalJsonWorkRepositoryInstrumentedTest {
     }
 
     // -------------------------------------------------------------------------
-    // 8. 真实 Repository 从 assets 读取 sample_works.json
+    // 8. 真实 Repository 从 assets 读取 sample_works.json 与 works.json
     // -------------------------------------------------------------------------
 
     @Test
     fun testRepository_loadsSampleWorksSuccessfully() = runBlocking {
-        val repository = LocalJsonWorkRepository(context, prefsName = testPrefsName)
+        val repository = LocalJsonWorkRepository(context, assetPath = "data/sample_works.json", prefsName = testPrefsName)
         val allWorks = repository.getAllWorks()
 
         assertEquals("sample_works.json 包含 6 首作品", 6, allWorks.size)
@@ -493,6 +495,54 @@ class LocalJsonWorkRepositoryInstrumentedTest {
         assertTrue(searchResults.any { it.title.contains("水调歌头") })
     }
 
+    @Test
+    fun testRepository_loadsRealWorksSuccessfully() = runBlocking {
+        val repository = LocalJsonWorkRepository(context, prefsName = testPrefsName)
+        val allWorks = repository.getAllWorks()
+
+        assertEquals("works.json 包含 600 首真实作品", 600, allWorks.size)
+
+        // 验证作品 ID 唯一性
+        val uniqueIds = allWorks.map { it.id }.toSet()
+        assertEquals("所有作品 ID 必须唯一", 600, uniqueIds.size)
+
+        // 验证标题与正文非空
+        assertTrue("所有作品标题不能为空", allWorks.all { it.title.isNotBlank() })
+        assertTrue("所有作品正文不能为空", allWorks.all { it.content.isNotBlank() })
+        assertTrue("所有作品摘录不能为空", allWorks.all { it.excerpt.isNotBlank() })
+
+        // 验证分类
+        val poems = repository.getWorksByGenre("poem")
+        assertEquals(320, poems.size)
+        assertTrue("唐诗朝代必须为唐", poems.all { it.dynasty == "唐" && it.genre == Genre.POEM })
+
+        val cis = repository.getWorksByGenre("ci")
+        assertEquals(280, cis.size)
+        assertTrue("宋词朝代必须为宋", cis.all { it.dynasty == "宋" && it.genre == Genre.CI })
+
+        // 验证首篇唐诗与宋词
+        val firstTang = repository.getWorkById("tang_000001")
+        assertNotNull(firstTang)
+        assertEquals("行宫", firstTang?.title)
+        assertEquals("元稹", firstTang?.author)
+
+        val firstSong = repository.getWorkById("song_000001")
+        assertNotNull(firstSong)
+        assertEquals("湘春夜月·近清明", firstSong?.title)
+        assertEquals("黄孝迈", firstSong?.author)
+
+        // 验证多维度搜索能力（标题、作者、正文）
+        val searchByTitle = repository.searchWorks("明月")
+        assertTrue("搜索标题结果不应为空", searchByTitle.isNotEmpty())
+
+        val searchByAuthor = repository.searchWorks("苏轼")
+        assertTrue("搜索作者结果不应为空", searchByAuthor.isNotEmpty())
+        assertTrue("应包含苏轼作品", searchByAuthor.all { it.author.contains("苏轼") })
+
+        val searchByContent = repository.searchWorks("天涯")
+        assertTrue("搜索正文结果不应为空", searchByContent.isNotEmpty())
+    }
+
     // -------------------------------------------------------------------------
     // 9. 真实 SharedPreferences 收藏持久化、最新居首与未映射历史 ID 完整性验证
     // -------------------------------------------------------------------------
@@ -510,7 +560,7 @@ class LocalJsonWorkRepositoryInstrumentedTest {
             .commit()
 
         // 初始化 Repository 实例（连接独立测试偏好）
-        val repository = LocalJsonWorkRepository(context, prefsName = testPrefsName)
+        val repository = LocalJsonWorkRepository(context, assetPath = "data/sample_works.json", prefsName = testPrefsName)
 
         // 验证 getFavoriteWorks() 只渲染当前数据集中真实存在的作品，但绝不删除未映射的 ID
         val favoriteWorks = repository.getFavoriteWorks()
@@ -534,7 +584,93 @@ class LocalJsonWorkRepositoryInstrumentedTest {
         assertEquals("较早收藏排在后面", "tang_000001", savedArray.getString(2))
 
         // 验证新建实例仍能精准还原状态
-        val repositoryReloaded = LocalJsonWorkRepository(context, prefsName = testPrefsName)
+        val repositoryReloaded = LocalJsonWorkRepository(context, assetPath = "data/sample_works.json", prefsName = testPrefsName)
         assertEquals(3, repositoryReloaded.favoriteIdsFlow.value.size)
+    }
+
+    // -------------------------------------------------------------------------
+    // 10. 首次搜索 Bug 专项回归测试：冷启动立即首搜、全字段检索、空结果与连续变更
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun testColdStart_firstSearch_returnsImmediatelyWithoutPriorLoad() = runBlocking {
+        // 创建全新的 Repository 实例，绝不预先调用 getAllWorks() 或其他预热接口
+        val freshRepository = LocalJsonWorkRepository(context, assetPath = "data/works.json", prefsName = testPrefsName)
+
+        // 首次调用直接进行关键词搜索
+        val results = freshRepository.searchWorks("白居易")
+        assertTrue("冷启动首次搜索白居易不应为空", results.isNotEmpty())
+        assertEquals("应包含 6 首白居易作品", 6, results.size)
+        assertTrue("所有结果均应匹配白居易", results.all {
+            it.author.contains("白居易") || it.title.contains("白居易") || it.content.contains("白居易")
+        })
+    }
+
+    @Test
+    fun testColdStart_searchAcrossTitleAuthorContent() = runBlocking {
+        val repository = LocalJsonWorkRepository(context, assetPath = "data/works.json", prefsName = testPrefsName)
+
+        // 1. 标题检索
+        val titleResults = repository.searchWorks("长恨歌")
+        assertTrue("按标题检索长恨歌应有结果", titleResults.isNotEmpty())
+        assertTrue("标题应命中长恨歌", titleResults.any { it.title == "长恨歌" })
+
+        // 2. 作者检索（包含作者为李白及提及李白的名作如《梦李白》）
+        val authorResults = repository.searchWorks("李白")
+        assertTrue("按作者检索李白应有结果", authorResults.isNotEmpty())
+        assertEquals("李白检索命中作品数应为 37", 37, authorResults.size)
+        assertTrue("应包含李白自身作品", authorResults.any { it.author == "李白" })
+
+        // 3. 正文检索
+        val contentResults = repository.searchWorks("离离原上草")
+        assertTrue("按正文名句检索应有结果", contentResults.isNotEmpty())
+        assertTrue("正文应命中赋得古原草送别", contentResults.any { it.title.contains("古原草") || it.content.contains("离离原上草") })
+    }
+
+    @Test
+    fun testSearch_emptyAndNonMatchingKeywords_returnEmptyList() = runBlocking {
+        val repository = LocalJsonWorkRepository(context, assetPath = "data/works.json", prefsName = testPrefsName)
+
+        // 空字符串或纯空格
+        assertTrue("空字符串搜索应为空", repository.searchWorks("").isEmpty())
+        assertTrue("空白字符搜索应为空", repository.searchWorks("   \t\n  ").isEmpty())
+
+        // 绝对不存在的关键词
+        val nonExistent = repository.searchWorks("一个绝无可能匹配的超长测试关键词_XYZ_987654")
+        assertTrue("无匹配关键词结果应为空列表", nonExistent.isEmpty())
+    }
+
+    @Test
+    fun testSearch_continuousKeywordSwitching_resultsRemainAccurate() = runBlocking {
+        val repository = LocalJsonWorkRepository(context, assetPath = "data/works.json", prefsName = testPrefsName)
+
+        // 模拟用户连续输入和更换关键词
+        val search1 = repository.searchWorks("苏轼")
+        val search2 = repository.searchWorks("辛弃疾")
+        val search3 = repository.searchWorks("不存在的词_404")
+        val search4 = repository.searchWorks("苏轼")
+
+        assertTrue("首次搜索苏轼应有结果", search1.isNotEmpty())
+        assertTrue("二次搜索辛弃疾应有结果", search2.isNotEmpty())
+        assertTrue("不存在词应为空", search3.isEmpty())
+        assertEquals("再次搜索苏轼结果应完全一致", search1.size, search4.size)
+        assertEquals("再次搜索苏轼第一篇作品 ID 应一致", search1.first().id, search4.first().id)
+    }
+
+    @Test
+    fun testSearch_coroutineCancellationAndIsolation() = runBlocking {
+        val repository = LocalJsonWorkRepository(context, assetPath = "data/works.json", prefsName = testPrefsName)
+
+        // 并发检索不同关键词，验证多协程互不干扰且无死锁
+        val (res1, res2) = coroutineScope {
+            val deferred1 = async { repository.searchWorks("杜甫") }
+            val deferred2 = async { repository.searchWorks("李商隐") }
+            Pair(deferred1.await(), deferred2.await())
+        }
+
+        assertTrue("杜甫检索结果非空", res1.isNotEmpty())
+        assertTrue("李商隐检索结果非空", res2.isNotEmpty())
+        assertTrue("杜甫结果作者包含杜甫", res1.all { it.author.contains("杜甫") || it.title.contains("杜甫") || it.content.contains("杜甫") })
+        assertTrue("李商隐结果作者包含李商隐", res2.all { it.author.contains("李商隐") || it.title.contains("李商隐") || it.content.contains("李商隐") })
     }
 }

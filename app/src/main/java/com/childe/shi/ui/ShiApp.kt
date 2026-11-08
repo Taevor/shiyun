@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +52,7 @@ import com.childe.shi.ui.detail.DetailScreen
 import com.childe.shi.ui.favorite.FavoriteScreen
 import com.childe.shi.ui.home.HomeScreen
 import com.childe.shi.ui.home.generateRecommendations
+import com.childe.shi.common.log.AppLogger
 import com.childe.shi.ui.search.SearchScreen
 import kotlinx.coroutines.launch
 
@@ -90,11 +92,17 @@ fun ShiApp(
 
     fun loadData() {
         errorMessage = null
+        AppLogger.i("ShiApp", "发起全量诗词数据异步装载")
+        val startTime = System.currentTimeMillis()
         scope.launch {
             try {
                 val works = repository.getAllWorks()
                 allWorks = works
+                val duration = System.currentTimeMillis() - startTime
+                AppLogger.i("ShiApp", "全量诗词数据装载成功: 总数=${works.size}首, 耗时=${duration}ms")
             } catch (e: Exception) {
+                val duration = System.currentTimeMillis() - startTime
+                AppLogger.e("ShiApp", "全量诗词数据装载失败: 耗时=${duration}ms, 原因=${e.message}", e)
                 errorMessage = e.message ?: "读取本地诗词数据失败"
             }
         }
@@ -106,6 +114,7 @@ fun ShiApp(
 
     // 拦截系统返回键：在详情页时关闭详情页；在非详情页且处于非首页 Tab 时返回首页
     BackHandler(enabled = selectedWork != null) {
+        AppLogger.i("Navigation", "系统返回键拦截: 关闭作品详情页")
         selectedWork = null
     }
 
@@ -159,8 +168,14 @@ fun ShiApp(
                     repository = repository,
                     works = works,
                     selectedWork = selectedWork,
-                    onSelectWork = { selectedWork = it },
-                    onDismissDetail = { selectedWork = null },
+                    onSelectWork = { work ->
+                        AppLogger.i("Detail", "进入作品详情: ID=${work.id}, 标题=${work.title}, 朝代=${work.dynasty}, 作者=${work.author}")
+                        selectedWork = work
+                    },
+                    onDismissDetail = {
+                        AppLogger.i("Detail", "离开作品详情")
+                        selectedWork = null
+                    },
                 )
             }
         }
@@ -212,6 +227,7 @@ private fun MainContent(
     var selectedDimension by rememberSaveable { mutableStateOf(CategoryDimension.DYNASTY) }
     var selectedDynasty by rememberSaveable { mutableStateOf("全部") }
     var selectedGenre by rememberSaveable { mutableStateOf("ALL") }
+    var selectedAnthologyId by rememberSaveable { mutableStateOf("anth_ts300") }
     var requestVersion by remember { mutableLongStateOf(0L) }
 
     fun onDimensionChange(newDimension: CategoryDimension) {
@@ -235,8 +251,50 @@ private fun MainContent(
         }
     }
 
+    fun onAnthologyChange(newAnthologyId: String) {
+        if (selectedAnthologyId != newAnthologyId) {
+            selectedAnthologyId = newAnthologyId
+            requestVersion++
+        }
+    }
+
     fun onRetryCategory() {
         requestVersion++
+    }
+
+    // ========== 选本阅读切篇上下文状态 ==========
+    var anthologyContextWorks by remember { mutableStateOf<List<Work>?>(null) }
+    var anthologyCurrentIndex by remember { mutableIntStateOf(-1) }
+
+    // 统一处理选本作品点击进入详情
+    fun onSelectWorkWithContext(work: Work, contextWorks: List<Work>?) {
+        anthologyContextWorks = contextWorks
+        anthologyCurrentIndex = if (contextWorks != null) contextWorks.indexOfFirst { it.id == work.id } else -1
+        onSelectWork(work)
+    }
+
+    // 选本内切篇：上一首
+    fun onPreviousAnthologyWork() {
+        val list = anthologyContextWorks ?: return
+        if (anthologyCurrentIndex > 0) {
+            val prevIndex = anthologyCurrentIndex - 1
+            val prevWork = list[prevIndex]
+            anthologyCurrentIndex = prevIndex
+            AppLogger.i("Detail", "选本切篇 [上一首]: 序号=$prevIndex, 作品 ID=${prevWork.id}, 标题=${prevWork.title}")
+            onSelectWork(prevWork)
+        }
+    }
+
+    // 选本内切篇：下一首
+    fun onNextAnthologyWork() {
+        val list = anthologyContextWorks ?: return
+        if (anthologyCurrentIndex in 0 until list.size - 1) {
+            val nextIndex = anthologyCurrentIndex + 1
+            val nextWork = list[nextIndex]
+            anthologyCurrentIndex = nextIndex
+            AppLogger.i("Detail", "选本切篇 [下一首]: 序号=$nextIndex, 作品 ID=${nextWork.id}, 标题=${nextWork.title}")
+            onSelectWork(nextWork)
+        }
     }
 
     // ========== 搜索页状态提升（持久留存） ==========
@@ -261,7 +319,11 @@ private fun MainContent(
                         HomeScreen(
                             recommendationList = recommendationList,
                             pagerState = homePagerState,
-                            onWorkClick = onSelectWork,
+                            onWorkClick = { work ->
+                                anthologyContextWorks = null
+                                anthologyCurrentIndex = -1
+                                onSelectWork(work)
+                            },
                         )
                     }
                     AppTab.CATEGORY -> {
@@ -272,12 +334,14 @@ private fun MainContent(
                             selectedDimension = selectedDimension,
                             selectedDynasty = selectedDynasty,
                             selectedGenre = selectedGenre,
+                            selectedAnthologyId = selectedAnthologyId,
                             requestVersion = requestVersion,
                             onDimensionChange = ::onDimensionChange,
                             onDynastyChange = ::onDynastyChange,
                             onGenreChange = ::onGenreChange,
+                            onAnthologyChange = ::onAnthologyChange,
                             onRetry = ::onRetryCategory,
-                            onWorkClick = onSelectWork,
+                            onWorkClick = ::onSelectWorkWithContext,
                         )
                     }
                     AppTab.SEARCH -> {
@@ -286,14 +350,22 @@ private fun MainContent(
                             keyword = searchKeyword,
                             onKeywordChange = { searchKeyword = it },
                             listState = searchListState,
-                            onWorkClick = onSelectWork,
+                            onWorkClick = { work ->
+                                anthologyContextWorks = null
+                                anthologyCurrentIndex = -1
+                                onSelectWork(work)
+                            },
                         )
                     }
                     AppTab.FAVORITE -> {
                         FavoriteScreen(
                             repository = repository,
                             listState = favoriteListState,
-                            onWorkClick = onSelectWork,
+                            onWorkClick = { work ->
+                                anthologyContextWorks = null
+                                anthologyCurrentIndex = -1
+                                onSelectWork(work)
+                            },
                         )
                     }
                 }
@@ -307,7 +379,12 @@ private fun MainContent(
             ) {
                 ShiBottomNavigationBar(
                     currentTab = currentTab,
-                    onTabSelected = { currentTab = it },
+                    onTabSelected = { newTab ->
+                        if (currentTab != newTab) {
+                            AppLogger.i("Navigation", "切换底部主导航: ${currentTab.label} -> ${newTab.label}")
+                            currentTab = newTab
+                        }
+                    },
                 )
             }
         }
@@ -320,6 +397,10 @@ private fun MainContent(
         ) {
             selectedWork?.let { work ->
                 val isFav = favoriteIds.contains(work.id)
+                val inAnthology = anthologyContextWorks != null
+                val hasPrev = inAnthology && anthologyCurrentIndex > 0
+                val hasNxt = inAnthology && anthologyContextWorks?.let { anthologyCurrentIndex in 0 until it.size - 1 } == true
+
                 DetailScreen(
                     work = work,
                     isFavorite = isFav,
@@ -328,7 +409,15 @@ private fun MainContent(
                             repository.toggleFavorite(work.id)
                         }
                     },
-                    onBack = onDismissDetail,
+                    onBack = {
+                        anthologyContextWorks = null
+                        anthologyCurrentIndex = -1
+                        onDismissDetail()
+                    },
+                    onPreviousWork = if (inAnthology) ::onPreviousAnthologyWork else null,
+                    onNextWork = if (inAnthology) ::onNextAnthologyWork else null,
+                    hasPrevious = hasPrev,
+                    hasNext = hasNxt,
                 )
             }
         }

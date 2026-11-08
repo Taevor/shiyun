@@ -1,7 +1,11 @@
 package com.childe.shi.data.repository
 
 import android.content.Context
+import com.childe.shi.common.log.AppLogger
 import com.childe.shi.data.model.AnnotationItem
+import com.childe.shi.data.model.Anthology
+import com.childe.shi.data.model.AnthologyItem
+import com.childe.shi.data.model.AnthologyWorkItem
 import com.childe.shi.data.model.AttributionInfo
 import com.childe.shi.data.model.AttributionStatus
 import com.childe.shi.data.model.AuxiliaryContent
@@ -34,7 +38,9 @@ import java.io.InputStreamReader
  */
 class LocalJsonWorkRepository(
     private val context: Context,
-    private val assetPath: String = "data/sample_works.json",
+    private val assetPath: String = "data/works.json",
+    private val anthologiesAssetPath: String = "data/anthologies.json",
+    private val anthologyItemsAssetPath: String = "data/anthology_items.json",
     private val prefsName: String = PREFS_NAME,
 ) : WorkRepository {
 
@@ -333,7 +339,15 @@ class LocalJsonWorkRepository(
     // 内存缓存，避免重复读取与解析文件
     @Volatile
     private var cachedWorks: List<Work>? = null
+
+    @Volatile
+    private var cachedAnthologies: List<Anthology>? = null
+
+    @Volatile
+    private var cachedAnthologyItems: List<AnthologyItem>? = null
+
     private val mutex = Mutex()
+    private val anthologyMutex = Mutex()
 
     // 收藏管理内部数据结构与同步锁
     private val favoriteLock = Any()
@@ -378,14 +392,19 @@ class LocalJsonWorkRepository(
         return getAllWorks().filter { it.dynasty == dynasty }
     }
 
-    override suspend fun searchWorks(keyword: String): List<Work> {
+    override suspend fun searchWorks(keyword: String): List<Work> = withContext(Dispatchers.IO) {
         val trimmed = keyword.trim()
-        if (trimmed.isEmpty()) return emptyList()
-        return getAllWorks().filter { work ->
+        if (trimmed.isEmpty()) return@withContext emptyList()
+        val startTime = System.currentTimeMillis()
+        val all = getAllWorks()
+        val results = all.filter { work ->
             work.title.contains(trimmed, ignoreCase = true) ||
             work.author.contains(trimmed, ignoreCase = true) ||
             work.content.contains(trimmed, ignoreCase = true)
         }
+        val duration = System.currentTimeMillis() - startTime
+        AppLogger.i("Repository", "执行本地全文检索: 关键词字数=${trimmed.length}, 耗时=${duration}ms, 命中数量=${results.size}")
+        results
     }
 
     override suspend fun getFavoriteWorks(): List<Work> {
@@ -400,6 +419,7 @@ class LocalJsonWorkRepository(
     override suspend fun toggleFavorite(id: String): Boolean {
         // 检查作品 ID 是否真实存在，不能收藏不存在的作品
         if (getWorkById(id) == null) {
+            AppLogger.w("Repository", "收藏操作忽略: 目标作品 ID 不存在: $id")
             return false
         }
 
@@ -415,6 +435,7 @@ class LocalJsonWorkRepository(
             _favoriteIdsFlow.value = favoriteIdList.toSet()
             saveFavoritesToPrefsLocked()
         }
+        AppLogger.i("Repository", "切换收藏状态: 作品 ID=$id, 状态=${if (isAdded) "已加入收藏" else "已取消收藏"}")
         return isAdded
     }
 
@@ -468,6 +489,9 @@ class LocalJsonWorkRepository(
      * 出现异常时不吞错，明确向上抛出，确保调用方获知真正的加载状态。
      */
     private suspend fun loadWorksFromAsset(): List<Work> = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
+        AppLogger.i("Repository", "开始读取并解析 assets 诗词数据: assetPath=$assetPath")
+
         val jsonString = try {
             context.assets.open(assetPath).use { inputStream ->
                 BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
@@ -475,15 +499,190 @@ class LocalJsonWorkRepository(
                 }
             }
         } catch (e: Exception) {
-            throw IllegalStateException("读取 assets 文件 [$assetPath] 失败: ${e.message}", e)
+            val error = IllegalStateException("读取 assets 文件 [$assetPath] 失败: ${e.message}", e)
+            AppLogger.e("Repository", "读取 assets 文件失败: assetPath=$assetPath", error)
+            throw error
         }
 
         val jsonArray = try {
             JSONArray(jsonString)
         } catch (e: Exception) {
-            throw IllegalStateException("解析 JSON 数据格式失败: ${e.message}", e)
+            val error = IllegalStateException("解析 JSON 数据格式失败: ${e.message}", e)
+            AppLogger.e("Repository", "解析 assets JSON 失败: assetPath=$assetPath", error)
+            throw error
         }
 
-        parseWorkListFromJsonArray(jsonArray)
+        val parsedWorks = try {
+            parseWorkListFromJsonArray(jsonArray)
+        } catch (e: Exception) {
+            AppLogger.e("Repository", "反序列化诗词实体失败: ${e.message}", e)
+            throw e
+        }
+
+        val duration = System.currentTimeMillis() - startTime
+        AppLogger.i("Repository", "诗词数据加载成功: assetPath=$assetPath, 耗时=${duration}ms, 总篇数=${parsedWorks.size}")
+        parsedWorks
+    }
+
+    // =========================================================================
+    // 选本 (Anthology) 核心实现
+    // =========================================================================
+
+    override suspend fun getAnthologies(): List<Anthology> {
+        val current = cachedAnthologies
+        if (current != null) return current
+        return anthologyMutex.withLock {
+            cachedAnthologies ?: loadAnthologiesFromAsset().also { cachedAnthologies = it }
+        }
+    }
+
+    override suspend fun getAnthologyById(id: String): Anthology? {
+        return getAnthologies().find { it.id == id }
+    }
+
+    override suspend fun getWorksByAnthology(anthologyId: String): List<AnthologyWorkItem> {
+        // 1. 确保全部作品和全部篇目数据就绪
+        val allWorksMap = getAllWorks().associateBy { it.id }
+        val allItems = getAllAnthologyItems()
+
+        // 2. 筛选出属于当前选本的所有篇目，并严格按 orderIndex 升序排序
+        val matchingItems = allItems.filter { it.anthologyId == anthologyId }
+            .sortedBy { it.orderIndex }
+
+        val totalRawCount = matchingItems.size
+        var missingCount = 0
+        val resultList = ArrayList<AnthologyWorkItem>(totalRawCount)
+
+        for (item in matchingItems) {
+            val work = allWorksMap[item.workId]
+            if (work != null) {
+                resultList.add(AnthologyWorkItem(item, work))
+            } else {
+                missingCount++
+                AppLogger.w(
+                    "Repository",
+                    "选本篇目关联作品缺失: 选本ID=$anthologyId, 篇目ID=${item.id}, 篇目序号=${item.orderIndex}, 目标作品ID=${item.workId}"
+                )
+            }
+        }
+
+        AppLogger.i(
+            "Repository",
+            "获取选本篇目完成: 选本ID=$anthologyId, 原始篇目数=$totalRawCount, 成功关联数=${resultList.size}, 缺失数=$missingCount"
+        )
+
+        return resultList
+    }
+
+    private suspend fun getAllAnthologyItems(): List<AnthologyItem> {
+        val current = cachedAnthologyItems
+        if (current != null) return current
+        return anthologyMutex.withLock {
+            cachedAnthologyItems ?: loadAnthologyItemsFromAsset().also { cachedAnthologyItems = it }
+        }
+    }
+
+    private suspend fun loadAnthologiesFromAsset(): List<Anthology> = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
+        AppLogger.i("Repository", "开始读取并解析选本定义: assetPath=$anthologiesAssetPath")
+
+        val jsonString = try {
+            context.assets.open(anthologiesAssetPath).use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+                    reader.readText()
+                }
+            }
+        } catch (e: Exception) {
+            val error = IllegalStateException("读取选本定义文件 [$anthologiesAssetPath] 失败: ${e.message}", e)
+            AppLogger.e("Repository", "读取选本定义文件失败: assetPath=$anthologiesAssetPath", error)
+            throw error
+        }
+
+        val jsonArray = try {
+            JSONArray(jsonString)
+        } catch (e: Exception) {
+            val error = IllegalStateException("解析选本定义 JSON 数据格式失败: ${e.message}", e)
+            AppLogger.e("Repository", "解析选本定义 JSON 失败: assetPath=$anthologiesAssetPath", error)
+            throw error
+        }
+
+        val list = mutableListOf<Anthology>()
+        for (i in 0 until jsonArray.length()) {
+            val obj = jsonArray.optJSONObject(i)
+                ?: throw IllegalStateException("选本定义数组元素非 JSONObject [序号: $i]")
+            val id = requireNonBlankString(obj, "id")
+            val code = requireNonBlankString(obj, "code")
+            val name = requireNonBlankString(obj, "name")
+            val compiler = obj.optString("compiler", "")
+            val dynasty = obj.optString("dynasty", "")
+            val targetCount = obj.optInt("targetCount", 0)
+            val editionNote = obj.optString("editionNote", "")
+            list.add(
+                Anthology(
+                    id = id,
+                    code = code,
+                    name = name,
+                    compiler = compiler,
+                    dynasty = dynasty,
+                    targetCount = targetCount,
+                    editionNote = editionNote
+                )
+            )
+        }
+
+        val duration = System.currentTimeMillis() - startTime
+        AppLogger.i("Repository", "选本定义加载成功: 耗时=${duration}ms, 数量=${list.size}")
+        list
+    }
+
+    private suspend fun loadAnthologyItemsFromAsset(): List<AnthologyItem> = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
+        AppLogger.i("Repository", "开始读取并解析选本篇目条目: assetPath=$anthologyItemsAssetPath")
+
+        val jsonString = try {
+            context.assets.open(anthologyItemsAssetPath).use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+                    reader.readText()
+                }
+            }
+        } catch (e: Exception) {
+            val error = IllegalStateException("读取选本篇目文件 [$anthologyItemsAssetPath] 失败: ${e.message}", e)
+            AppLogger.e("Repository", "读取选本篇目文件失败: assetPath=$anthologyItemsAssetPath", error)
+            throw error
+        }
+
+        val jsonArray = try {
+            JSONArray(jsonString)
+        } catch (e: Exception) {
+            val error = IllegalStateException("解析选本篇目 JSON 数据格式失败: ${e.message}", e)
+            AppLogger.e("Repository", "解析选本篇目 JSON 失败: assetPath=$anthologyItemsAssetPath", error)
+            throw error
+        }
+
+        val list = ArrayList<AnthologyItem>(jsonArray.length())
+        for (i in 0 until jsonArray.length()) {
+            val obj = jsonArray.optJSONObject(i)
+                ?: throw IllegalStateException("选本篇目数组元素非 JSONObject [序号: $i]")
+            val id = requireNonBlankString(obj, "id")
+            val anthologyId = requireNonBlankString(obj, "anthologyId")
+            val workId = requireNonBlankString(obj, "workId")
+            val orderIndex = if (obj.has("orderIndex")) obj.getInt("orderIndex") else {
+                throw IllegalArgumentException("选本篇目缺少必填整数字段 'orderIndex' [序号: $i, ID: $id]")
+            }
+            val volume = obj.optString("volume", "")
+            list.add(
+                AnthologyItem(
+                    id = id,
+                    anthologyId = anthologyId,
+                    workId = workId,
+                    orderIndex = orderIndex,
+                    volume = volume
+                )
+            )
+        }
+
+        val duration = System.currentTimeMillis() - startTime
+        AppLogger.i("Repository", "选本篇目条目加载成功: 耗时=${duration}ms, 数量=${list.size}")
+        list
     }
 }

@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.childe.shi.common.log.AppLogger
 import com.childe.shi.data.repository.LocalJsonWorkRepository
 import com.childe.shi.data.repository.WorkRepository
 import com.childe.shi.ui.ShiApp
@@ -25,6 +26,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 初始化应用日志系统
+        AppLogger.init(applicationContext)
+        AppLogger.i("MainActivity", "应用主 Activity 启动 (onCreate)")
+
         enableEdgeToEdge()
         setContent {
             诗云Theme {

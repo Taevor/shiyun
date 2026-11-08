@@ -57,6 +57,10 @@ fun DetailScreen(
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     onBack: () -> Unit,
+    onPreviousWork: (() -> Unit)? = null,
+    onNextWork: (() -> Unit)? = null,
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
@@ -155,7 +159,66 @@ fun DetailScreen(
                 PoemContentLayout(content = work.content)
 
                 // 底部留白，保障视觉呼吸感
-                Spacer(modifier = Modifier.height(48.dp))
+                Spacer(modifier = Modifier.height(32.dp))
+            }
+        }
+
+        // 选本场景专属：上一首 / 下一首 控制栏（非选本场景完全不显示）
+        if (onPreviousWork != null || onNextWork != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 上一首
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(
+                            enabled = hasPrevious,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(bounded = true, radius = 24.dp),
+                            onClick = { onPreviousWork?.invoke() },
+                        )
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    val prevColor = if (hasPrevious) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    PreviousArrowIcon(tint = prevColor)
+                    Text(
+                        text = "上一首",
+                        fontSize = 14.sp,
+                        color = prevColor,
+                        fontWeight = if (hasPrevious) FontWeight.Medium else FontWeight.Normal,
+                    )
+                }
+
+                // 下一首
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(
+                            enabled = hasNext,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(bounded = true, radius = 24.dp),
+                            onClick = { onNextWork?.invoke() },
+                        )
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    val nextColor = if (hasNext) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    Text(
+                        text = "下一首",
+                        fontSize = 14.sp,
+                        color = nextColor,
+                        fontWeight = if (hasNext) FontWeight.Medium else FontWeight.Normal,
+                    )
+                    NextArrowIcon(tint = nextColor)
+                }
             }
         }
     }
@@ -195,6 +258,66 @@ private fun BackArrowIcon(
             color = tint,
             start = Offset(w * 0.15f, h * 0.5f),
             end = Offset(w * 0.45f, h * 0.8f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/**
+ * 上一首中式微箭头图标（向左）
+ */
+@Composable
+private fun PreviousArrowIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.size(16.dp)) {
+        val stroke = 1.8.dp.toPx()
+        val w = size.width
+        val h = size.height
+
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.65f, h * 0.2f),
+            end = Offset(w * 0.35f, h * 0.5f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.35f, h * 0.5f),
+            end = Offset(w * 0.65f, h * 0.8f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/**
+ * 下一首中式微箭头图标（向右）
+ */
+@Composable
+private fun NextArrowIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.size(16.dp)) {
+        val stroke = 1.8.dp.toPx()
+        val w = size.width
+        val h = size.height
+
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.35f, h * 0.2f),
+            end = Offset(w * 0.65f, h * 0.5f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.65f, h * 0.5f),
+            end = Offset(w * 0.35f, h * 0.8f),
             strokeWidth = stroke,
             cap = StrokeCap.Round,
         )

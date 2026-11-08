@@ -250,4 +250,37 @@ class DataModelTest {
         assertEquals("", emptyWork.formatAuthorDynasty())
         assertEquals("诗", emptyWork.formatAuthorDynastyGenre())
     }
+
+    // -------------------------------------------------------------------------
+    // 7. Anthology 与 AnthologyItem 实体测试
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun testAnthology_constructionAndProperties() {
+        val anthology = Anthology(
+            id = "anth_ts300",
+            code = "ts300",
+            name = "《唐诗三百首》",
+            compiler = "[清] 蘅塘退士",
+            dynasty = "清",
+            targetCount = 320,
+            editionNote = "基于 chinese-poetry 整理"
+        )
+        assertEquals("anth_ts300", anthology.id)
+        assertEquals("ts300", anthology.code)
+        assertEquals(320, anthology.targetCount)
+
+        val item = AnthologyItem(
+            id = "item_tang_000001",
+            anthologyId = "anth_ts300",
+            workId = "tang_000001",
+            orderIndex = 1,
+            volume = "五言绝句"
+        )
+        assertEquals("item_tang_000001", item.id)
+        assertEquals("anth_ts300", item.anthologyId)
+        assertEquals("tang_000001", item.workId)
+        assertEquals(1, item.orderIndex)
+        assertEquals("五言绝句", item.volume)
+    }
 }

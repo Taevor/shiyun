@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.childe.shi.data.model.Work
 import com.childe.shi.data.model.formatAuthorDynasty
 import com.childe.shi.data.repository.WorkRepository
+import com.childe.shi.ui.log.LogManagementDialog
 
 /**
  * 收藏页面主组件（受控组件，列表状态由外层顶层提升管理）
@@ -58,10 +59,15 @@ fun FavoriteScreen(
 ) {
     val favoriteIds by repository.favoriteIdsFlow.collectAsState()
     var favoriteWorks by remember { mutableStateOf<List<Work>>(emptyList()) }
+    var showLogDialog by remember { mutableStateOf(false) }
 
     // 监听收藏 ID 集合变化，自动同步最新的有序作品列表
     LaunchedEffect(favoriteIds) {
         favoriteWorks = repository.getFavoriteWorks()
+    }
+
+    if (showLogDialog) {
+        LogManagementDialog(onDismissRequest = { showLogDialog = false })
     }
 
     Column(
@@ -84,11 +90,25 @@ fun FavoriteScreen(
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-            if (favoriteWorks.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (favoriteWorks.isNotEmpty()) {
+                    Text(
+                        text = "共 ${favoriteWorks.size} 首",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
                 Text(
-                    text = "共 ${favoriteWorks.size} 首",
+                    text = "运行日志",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.outline,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clickable { showLogDialog = true }
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
         }

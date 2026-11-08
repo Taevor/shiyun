@@ -1,0 +1,20 @@
+[
+  {
+    "id": "anth_ts300",
+    "code": "ts300",
+    "name": "《唐诗三百首》",
+    "compiler": "[清] 蘅塘退士",
+    "dynasty": "清",
+    "targetCount": 320,
+    "editionNote": "基于 chinese-poetry 蒙学/tangshisanbaishou.json 整理收录（实收320首）"
+  },
+  {
+    "id": "anth_sc300",
+    "code": "sc300",
+    "name": "《宋词三百首》",
+    "compiler": "[清] 朱孝臧编，唐圭璋笺",
+    "dynasty": "民国",
+    "targetCount": 280,
+    "editionNote": "基于 chinese-poetry 宋词/宋词三百首.json 整理收录（实收280首，待补20首）"
+  }
+]
