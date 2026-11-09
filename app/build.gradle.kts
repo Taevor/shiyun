@@ -4,17 +4,17 @@ plugins {
 }
 
 android {
-    namespace = "com.childe.shi"
+    namespace = "com.shi.yun"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.childe.shi"
+        applicationId = "com.shi.yun"
         minSdk = 29
         targetSdk = 37
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1.0-beta.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

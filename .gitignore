@@ -1,15 +1,61 @@
-*.iml
-.gradle
+# Built application files and binaries
+*.apk
+*.ap_
+*.aab
+*.aar
+*.dex
+*.class
+
+# Gradle files and build caches
+.gradle/
+build/
+/build
+/app/build/
+
+# Kotlin compiler caches
+.kotlin/
+*.kotlin_module
+
+# Local configuration and environment
+local.properties
 /local.properties
+
+# Log and temporary files
+*.log
+*.tmp
+*.bak
+*.hprof
+captures/
+/captures
+
+# Android Studio / IntelliJ IDEA
+*.iml
+.navigation/
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
+/.idea/deploymentTargetSelector.xml
+/.idea/shelf/
+/.idea/androidTestResultsUserPreferences.xml
+/.idea/render.experimental.xml
+
+# Keystore and signing files
+*.jks
+*.keystore
+*.key
+*.p12
+*.pem
+
+# External native build folders
 .externalNativeBuild
 .cxx
-local.properties
+.cxx/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
